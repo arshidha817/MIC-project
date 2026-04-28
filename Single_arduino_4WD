@@ -2,10 +2,8 @@
 #include "HX711.h"
 
 // Motor Setup
-AF_DCMotor m1(1); // Right Rear
-AF_DCMotor m2(2); // Right Front
-AF_DCMotor m3(3); // Left Front
-AF_DCMotor m4(4); // Left Back
+AF_DCMotor m1(1); AF_DCMotor m2(2); 
+AF_DCMotor m3(3); AF_DCMotor m4(4); 
 
 // Pin Definitions
 const int HX711_DT = A4;
@@ -15,20 +13,19 @@ const int IR_RIGHT = A0;
 const int TRIG = A5;
 const int ECHO = A1;
 const int BUZZER = 2;
+const int TABLE_BTN = 1; 
 
-// Thresholds & Settings
-int robotSpeed = 230;
+// Settings
+int robotSpeed = 200;
 float weightThreshold = 10.0; 
-int obstacleDistance = 5; // Distance in cm
+int obstacleDistance = 5; // Updated to 5cm
 HX711 scale;
 
 void setup() {
-  Serial.begin(9600);
+  // Serial.begin(9600); // Pin 1 is used for the button
   
-  m1.setSpeed(robotSpeed);
-  m2.setSpeed(robotSpeed);
-  m3.setSpeed(robotSpeed);
-  m4.setSpeed(robotSpeed);
+  m1.setSpeed(robotSpeed); m2.setSpeed(robotSpeed);
+  m3.setSpeed(robotSpeed); m4.setSpeed(robotSpeed);
   stopRobot();
 
   pinMode(IR_LEFT, INPUT);
@@ -36,6 +33,7 @@ void setup() {
   pinMode(BUZZER, OUTPUT);
   pinMode(TRIG, OUTPUT);
   pinMode(ECHO, INPUT);
+  pinMode(TABLE_BTN, INPUT_PULLUP); 
   
   scale.begin(HX711_DT, HX711_SCK);
   scale.set_scale(); 
@@ -43,81 +41,114 @@ void setup() {
 }
 
 void loop() {
-  // 1. INITIAL STATE: Wait for weight
+  // 1. STANDBY: Wait for Weight > 10g
   while (getWeight() < weightThreshold) {
     stopRobot();
-    digitalWrite(BUZZER, LOW);
-    delay(100); 
+    delay(100);
   }
 
-  // 2. MOVEMENT STATE: Line Following + Obstacle Check
-  bool atTable = false;
-  while (!atTable) {
-    checkObstacle(); // New: Pauses everything if obstacle < 5cm
+  // 2. SELECTION: Count Button Presses (N times for Nth table)
+  int targetTable = 0;
+  digitalWrite(BUZZER, HIGH); delay(100); digitalWrite(BUZZER, LOW); 
+  
+  unsigned long lastPressTime = millis();
+  while (millis() - lastPressTime < 2000 || targetTable == 0) {
+    if (digitalRead(TABLE_BTN) == LOW) {
+      targetTable++;
+      digitalWrite(BUZZER, HIGH); delay(200); digitalWrite(BUZZER, LOW);
+      while(digitalRead(TABLE_BTN) == LOW); 
+      lastPressTime = millis();
+    }
+  }
 
+  // 3. DELIVERY: Move Forward to Table N
+  int tablesFound = 0;
+  bool onWhiteLine = false;
+
+  while (tablesFound < targetTable) {
+    checkObstacle(); // Safety check
+    
+    int leftVal = digitalRead(IR_LEFT);
+    int rightVal = digitalRead(IR_RIGHT);
+
+    // Detect White Line
+    if (leftVal == LOW && rightVal == LOW) {
+      if (!onWhiteLine) { 
+        tablesFound++;
+        onWhiteLine = true;
+        if(tablesFound == targetTable) break; 
+      }
+    } else {
+      onWhiteLine = false; 
+    }
+    moveForward();
+  }
+
+  // 4. AT TABLE: Stop and Buzz until weight is removed
+  stopRobot();
+  while (getWeight() >= weightThreshold) {
+    digitalWrite(BUZZER, HIGH); delay(200);
+    digitalWrite(BUZZER, LOW);  delay(200);
+  }
+
+  // 5. RETURN: Move Backward to Start
+  int tablesBack = 0;
+  onWhiteLine = false;
+  
+  while (tablesBack < targetTable) {
+    checkObstacle(); 
+    
     int leftVal = digitalRead(IR_LEFT);
     int rightVal = digitalRead(IR_RIGHT);
 
     if (leftVal == LOW && rightVal == LOW) {
-      atTable = true;
+      if (!onWhiteLine) {
+        tablesBack++;
+        onWhiteLine = true;
+      }
     } else {
-      moveForward();
+      onWhiteLine = false;
     }
-  }
-
-  // 3. TABLE STATE: Stop and Buzz until weight removed
-  stopRobot();
-  while (getWeight() >= weightThreshold) {
-    digitalWrite(BUZZER, HIGH); 
-    delay(200);
-    digitalWrite(BUZZER, LOW);
-    delay(200);
-  }
-  
-  // 4. EXIT STATE: Move forward for 3 seconds + Obstacle Check
-  unsigned long startTime = millis();
-  while (millis() - startTime < 3000) {
-    checkObstacle(); // Still check for obstacles during the 3s exit
-    moveForward();
+    moveBackward();
   }
   
   stopRobot();
+  digitalWrite(BUZZER, HIGH); delay(1000); digitalWrite(BUZZER, LOW); 
 }
 
-// --- New Obstacle Detection Logic ---
+// --- Logic Functions ---
 
 void checkObstacle() {
-  long distance = getDistance();
-  
-  // If obstacle detected within 5cm
-  while (distance > 0 && distance <= obstacleDistance) {
+  long dist = getDistance();
+  // While something is closer than 5cm, stop and beep
+  while (dist > 0 && dist <= obstacleDistance) {
     stopRobot();
-    digitalWrite(BUZZER, HIGH); // Constant beep or rapid beep
-    delay(100);
-    digitalWrite(BUZZER, LOW);
-    delay(100);
-    distance = getDistance(); // Re-check if obstacle is still there
+    digitalWrite(BUZZER, HIGH); delay(100);
+    digitalWrite(BUZZER, LOW);  delay(100);
+    dist = getDistance();
   }
 }
 
 long getDistance() {
-  digitalWrite(TRIG, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG, HIGH);
-  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH); delayMicroseconds(10);
   digitalWrite(TRIG, LOW);
   
-  long duration = pulseIn(ECHO, HIGH);
+  long duration = pulseIn(ECHO, HIGH, 20000); // Reduced timeout for faster response
   long cm = duration * 0.034 / 2;
   
-  return (cm == 0) ? 999 : cm; // Return a high number if sensor times out
+  if (duration == 0 || cm > 400) return 999; // Filter out errors
+  return cm;
 }
-
-// --- Movement Functions ---
 
 void moveForward() {
   m1.run(FORWARD); m2.run(FORWARD);
   m3.run(FORWARD); m4.run(FORWARD);
+}
+
+void moveBackward() {
+  m1.run(BACKWARD); m2.run(BACKWARD);
+  m3.run(BACKWARD); m4.run(BACKWARD);
 }
 
 void stopRobot() {
