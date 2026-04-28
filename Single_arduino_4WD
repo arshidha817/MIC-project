@@ -1,0 +1,105 @@
+//this is when we use one arduino, 4WD, and power the arduino using power bank
+
+#include <AFMotor.h>
+#include "HX711.h"
+
+// Motor Setup
+AF_DCMotor m1(1); // Right Rear
+AF_DCMotor m2(2); // Right Front
+AF_DCMotor m3(3); // Left Front
+AF_DCMotor m4(4); // Left Back
+
+// Pin Definitions
+const int HX711_DT = A4;
+const int HX711_SCK = A2;
+const int IR_LEFT = A3;
+const int IR_RIGHT = A0;
+const int TRIG = A5;
+const int ECHO = A1;
+const int BUZZER = 2;
+
+// Thresholds & Settings
+int robotSpeed = 230;
+float weightThreshold =4000 ; // 10 grams
+HX711 scale;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Motor Init
+  m1.setSpeed(robotSpeed);
+  m2.setSpeed(robotSpeed);
+  m3.setSpeed(robotSpeed);
+  m4.setSpeed(robotSpeed);
+  stopRobot();
+
+  // Pin Modes
+  pinMode(IR_LEFT, INPUT);
+  pinMode(IR_RIGHT, INPUT);
+  pinMode(BUZZER, OUTPUT);
+  
+  // Load Cell Init
+  scale.begin(HX711_DT, HX711_SCK);
+  scale.set_scale(); // You may need to insert your calibration factor here
+  scale.tare();      // Reset scale to 0
+}
+
+void loop() {
+  // 1. INITIAL STATE: Wait for weight > 10g to start
+  while (getWeight() < weightThreshold) {
+    stopRobot();
+    digitalWrite(BUZZER, LOW);
+    delay(100); 
+  }
+
+  // 2. MOVEMENT STATE: Line Following (Black = detected)
+  // Assuming Black = HIGH and White = LOW for your IR sensors
+  bool atTable = false;
+  while (!atTable) {
+    int leftVal = digitalRead(IR_LEFT);
+    int rightVal = digitalRead(IR_RIGHT);
+
+    if (leftVal == LOW && rightVal == LOW) {
+      // Both White: Table Detected
+      atTable = true;
+    } else {
+      // Follow line/Go Forward (Simplified for your logic)
+      moveForward();
+    }
+  }
+
+  // 3. TABLE STATE: Stop and Buzz until weight removed
+  stopRobot();
+  while (getWeight() >= weightThreshold) {
+    digitalWrite(BUZZER, HIGH); // Buzz while weight is on
+    delay(200);
+    digitalWrite(BUZZER, LOW);
+    delay(200);
+  }
+  
+  // 4. EXIT STATE: Weight removed, move forward for 3 seconds
+  digitalWrite(BUZZER, LOW);
+  moveForward();
+  delay(3000);
+  
+  // End of sequence - stops until weight is placed again
+  stopRobot();
+}
+
+// --- Movement Functions ---
+
+void moveForward() {
+  m1.run(FORWARD); m2.run(FORWARD);
+  m3.run(FORWARD); m4.run(FORWARD);
+}
+
+void stopRobot() {
+  m1.run(RELEASE); m2.run(RELEASE);
+  m3.run(RELEASE); m4.run(RELEASE);
+}
+
+float getWeight() {
+  // Returns weight. If scale is not calibrated, 
+  // this value represents raw data/units.
+  return scale.get_units(5); 
+}
