@@ -1,5 +1,3 @@
-//this is when we use one arduino, 4WD, and power the arduino using power bank
-
 #include <AFMotor.h>
 #include "HX711.h"
 
@@ -20,50 +18,49 @@ const int BUZZER = 2;
 
 // Thresholds & Settings
 int robotSpeed = 230;
-float weightThreshold =4000 ; // 10 grams
+float weightThreshold = 10.0; 
+int obstacleDistance = 5; // Distance in cm
 HX711 scale;
 
 void setup() {
   Serial.begin(9600);
   
-  // Motor Init
   m1.setSpeed(robotSpeed);
   m2.setSpeed(robotSpeed);
   m3.setSpeed(robotSpeed);
   m4.setSpeed(robotSpeed);
   stopRobot();
 
-  // Pin Modes
   pinMode(IR_LEFT, INPUT);
   pinMode(IR_RIGHT, INPUT);
   pinMode(BUZZER, OUTPUT);
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
   
-  // Load Cell Init
   scale.begin(HX711_DT, HX711_SCK);
-  scale.set_scale(); // You may need to insert your calibration factor here
-  scale.tare();      // Reset scale to 0
+  scale.set_scale(); 
+  scale.tare();      
 }
 
 void loop() {
-  // 1. INITIAL STATE: Wait for weight > 10g to start
+  // 1. INITIAL STATE: Wait for weight
   while (getWeight() < weightThreshold) {
     stopRobot();
     digitalWrite(BUZZER, LOW);
     delay(100); 
   }
 
-  // 2. MOVEMENT STATE: Line Following (Black = detected)
-  // Assuming Black = HIGH and White = LOW for your IR sensors
+  // 2. MOVEMENT STATE: Line Following + Obstacle Check
   bool atTable = false;
   while (!atTable) {
+    checkObstacle(); // New: Pauses everything if obstacle < 5cm
+
     int leftVal = digitalRead(IR_LEFT);
     int rightVal = digitalRead(IR_RIGHT);
 
     if (leftVal == LOW && rightVal == LOW) {
-      // Both White: Table Detected
       atTable = true;
     } else {
-      // Follow line/Go Forward (Simplified for your logic)
       moveForward();
     }
   }
@@ -71,19 +68,49 @@ void loop() {
   // 3. TABLE STATE: Stop and Buzz until weight removed
   stopRobot();
   while (getWeight() >= weightThreshold) {
-    digitalWrite(BUZZER, HIGH); // Buzz while weight is on
+    digitalWrite(BUZZER, HIGH); 
     delay(200);
     digitalWrite(BUZZER, LOW);
     delay(200);
   }
   
-  // 4. EXIT STATE: Weight removed, move forward for 3 seconds
-  digitalWrite(BUZZER, LOW);
-  moveForward();
-  delay(3000);
+  // 4. EXIT STATE: Move forward for 3 seconds + Obstacle Check
+  unsigned long startTime = millis();
+  while (millis() - startTime < 3000) {
+    checkObstacle(); // Still check for obstacles during the 3s exit
+    moveForward();
+  }
   
-  // End of sequence - stops until weight is placed again
   stopRobot();
+}
+
+// --- New Obstacle Detection Logic ---
+
+void checkObstacle() {
+  long distance = getDistance();
+  
+  // If obstacle detected within 5cm
+  while (distance > 0 && distance <= obstacleDistance) {
+    stopRobot();
+    digitalWrite(BUZZER, HIGH); // Constant beep or rapid beep
+    delay(100);
+    digitalWrite(BUZZER, LOW);
+    delay(100);
+    distance = getDistance(); // Re-check if obstacle is still there
+  }
+}
+
+long getDistance() {
+  digitalWrite(TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+  
+  long duration = pulseIn(ECHO, HIGH);
+  long cm = duration * 0.034 / 2;
+  
+  return (cm == 0) ? 999 : cm; // Return a high number if sensor times out
 }
 
 // --- Movement Functions ---
@@ -99,7 +126,5 @@ void stopRobot() {
 }
 
 float getWeight() {
-  // Returns weight. If scale is not calibrated, 
-  // this value represents raw data/units.
   return scale.get_units(5); 
 }
