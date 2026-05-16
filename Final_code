@@ -1,0 +1,183 @@
+#include <AFMotor.h>
+#include "HX711.h"
+
+// --- MOTOR CONFIGURATION (2WD) ---
+AF_DCMotor motorR(2); 
+AF_DCMotor motorL(1); 
+
+// --- PIN DEFINITIONS ---
+const int IR_LEFT   = A3;
+const int IR_RIGHT  = A0;
+const int TRIG      = A5;      
+const int ECHO      = A1;
+const int BUZZER    = 2;
+const int LC_DT     = A4;     
+const int LC_SCK    = A2;
+const int TABLE_BTN = 1; // TX Pin (Disconnect when uploading!)
+
+// --- SETTINGS ---
+HX711 scale;
+float weightThreshold = 10.0; // 10 grams
+int obstacleDistance = 5;      // 5 cm
+int robotSpeed = 250;
+
+// State Variables
+int prev_action = 1; // 1-Forward, 3-Right, 4-Left
+bool onWhiteLine = false;
+
+// --- UTILITY FUNCTIONS ---
+
+void stopMotors() {
+  motorL.run(RELEASE); 
+  motorR.run(RELEASE);
+}
+
+void moveForward() {
+  motorL.run(FORWARD);
+  motorR.run(FORWARD);
+}
+
+void turnRight() {
+  motorL.run(FORWARD);
+  motorR.run(BACKWARD);
+}
+
+void turnLeft() {
+  motorL.run(BACKWARD);
+  motorR.run(FORWARD);
+}
+
+void beep(int times) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(BUZZER, HIGH); 
+    delay(150);
+    digitalWrite(BUZZER, LOW); 
+    delay(100);
+  }
+}
+
+float getWeight() {
+  return scale.get_units(5); 
+}
+
+long getDistance() {
+  digitalWrite(TRIG, LOW); delayMicroseconds(2);
+  digitalWrite(TRIG, HIGH); delayMicroseconds(10);
+  digitalWrite(TRIG, LOW);
+  long duration = pulseIn(ECHO, HIGH, 20000); 
+  long cm = duration * 0.034 / 2;
+  if (duration == 0 || cm > 400) return 999;
+  return cm;
+}
+
+void checkObstacle() {
+  long dist = getDistance();
+  while (dist > 0 && dist <= obstacleDistance) {
+    stopMotors();
+    digitalWrite(BUZZER, HIGH); delay(100);
+    digitalWrite(BUZZER, LOW);  delay(100);
+    dist = getDistance();
+  }
+}
+
+void followLineLogic(int L, int R) {
+  // Line Following (HIGH=Black Line, LOW=White Surface)
+  if (L == HIGH && R == HIGH) {
+    moveForward();
+    prev_action = 1;
+  } 
+  else if (L == HIGH && R == LOW) {
+    turnLeft(); 
+    prev_action = 4;
+  } 
+  else if (L == LOW && R == HIGH) {
+    turnRight(); 
+    prev_action = 3;
+  } 
+  else {
+    // Memory logic for white surface gaps
+    if (prev_action == 4) turnLeft();
+    else if (prev_action == 3) turnRight();
+    else moveForward();
+  }
+}
+
+// --- MAIN SETUP ---
+
+void setup() {
+  // Serial.begin(9600); // Serial disabled for Pin 1 button use
+  pinMode(IR_LEFT, INPUT);
+  pinMode(IR_RIGHT, INPUT);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(TRIG, OUTPUT);
+  pinMode(ECHO, INPUT);
+  pinMode(TABLE_BTN, INPUT_PULLUP); 
+  
+  scale.begin(LC_DT, LC_SCK);
+  scale.set_scale(); 
+  scale.tare();      
+
+  motorL.setSpeed(robotSpeed);
+  motorR.setSpeed(robotSpeed);
+  
+  stopMotors(); 
+}
+
+// --- MAIN LOOP ---
+
+void loop() {
+  // 1. STANDBY: Wait for load >= 10g
+  while (getWeight() < weightThreshold) {
+    stopMotors();
+    delay(100);
+  }
+
+  // 2. SELECTION: Count Button Presses (N times for Table N)
+  int targetTable = 0;
+  beep(1);
+  unsigned long lastPressTime = millis();
+  while (millis() - lastPressTime < 2000 || targetTable == 0) {
+    if (digitalRead(TABLE_BTN) == LOW) {
+      targetTable++;
+      beep(1);
+      while(digitalRead(TABLE_BTN) == LOW); // Wait for release
+      lastPressTime = millis();
+    }
+  }
+  beep(2);
+
+  // 3. DELIVERY: Move Forward until targetTable is reached
+  int tablesFound = 0;
+  onWhiteLine = false;
+  
+  while (tablesFound < targetTable) {
+    checkObstacle(); // Safety check
+    
+    int L = digitalRead(IR_LEFT);
+    int R = digitalRead(IR_RIGHT);
+    
+    // Station Detection: Both sensors LOW (White Surface cross-line)
+    if (L == LOW && R == LOW) {
+      if (!onWhiteLine) {
+        tablesFound++;
+        onWhiteLine = true;
+        if (tablesFound == targetTable) break; // Exit loop if destination reached
+      }
+      moveForward(); 
+    } else {
+      onWhiteLine = false;
+      followLineLogic(L, R);
+    }
+  }
+
+  // 4. DESTINATION REACHED: Stop and beep until weight is removed
+  stopMotors();
+  while (getWeight() >= (weightThreshold)) {
+    digitalWrite(BUZZER, HIGH); delay(200);
+    digitalWrite(BUZZER, LOW);  delay(200);
+  }
+
+  // 5. FINISHED: Weight removed, system resets/waits for new load
+  beep(3); // Signify mission complete
+  // Robot stays here. To restart, place new weight and press button.
+}
